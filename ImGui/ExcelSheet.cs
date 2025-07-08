@@ -10,7 +10,7 @@ namespace ImGuiNET;
 
 public static partial class ImGuiEx
 {
-    public record ExcelSheetOptions<T> where T : struct, IExcelRow<T>
+    public record ExcelSheetOptions<T> where T : ExcelRow
     {
         public Func<T, string> FormatRow { get; init; } = row => row.ToString();
         public Func<T, string, bool> SearchPredicate { get; init; } = null;
@@ -19,13 +19,13 @@ public static partial class ImGuiEx
         public Vector2? Size { get; init; } = null;
     }
 
-    public record ExcelSheetComboOptions<T> : ExcelSheetOptions<T> where T : struct, IExcelRow<T>
+    public record ExcelSheetComboOptions<T> : ExcelSheetOptions<T> where T : ExcelRow
     {
         public Func<T, string> GetPreview { get; init; } = null;
         public ImGuiComboFlags ComboFlags { get; init; } = ImGuiComboFlags.None;
     }
 
-    public record ExcelSheetPopupOptions<T> : ExcelSheetOptions<T> where T : struct, IExcelRow<T>
+    public record ExcelSheetPopupOptions<T> : ExcelSheetOptions<T> where T : ExcelRow
     {
         public ImGuiPopupFlags PopupFlags { get; init; } = ImGuiPopupFlags.None;
         public bool CloseOnSelection { get; init; } = false;
@@ -33,11 +33,11 @@ public static partial class ImGuiEx
     }
 
     private static string sheetSearchText;
-    private static uint[] filteredSearchIDs;
+    private static ExcelRow[] filteredSearchSheet;
     private static string prevSearchID;
     private static Type prevSearchType;
 
-    private static void ExcelSheetSearchInput<T>(string id, IEnumerable<T> filteredSheet, Func<T, string, bool> searchPredicate) where T : struct, IExcelRow<T>
+    private static void ExcelSheetSearchInput<T>(string id, IEnumerable<T> filteredSheet, Func<T, string, bool> searchPredicate) where T : ExcelRow
     {
         if (ImGui.IsWindowAppearing() && ImGui.IsWindowFocused() && !ImGui.IsAnyItemActive())
         {
@@ -49,7 +49,7 @@ public static partial class ImGuiEx
                     prevSearchType = typeof(T);
                 }
 
-                filteredSearchIDs = null;
+                filteredSearchSheet = null;
                 prevSearchID = id;
             }
 
@@ -57,18 +57,19 @@ public static partial class ImGuiEx
         }
 
         if (ImGui.InputTextWithHint("##ExcelSheetSearch", "Search", ref sheetSearchText, 128, ImGuiInputTextFlags.AutoSelectAll))
-            filteredSearchIDs = null;
+            filteredSearchSheet = null;
 
-        filteredSearchIDs ??= filteredSheet.Where(s => searchPredicate(s, sheetSearchText)).Select(r => r.RowId).ToArray();
+        filteredSearchSheet ??= filteredSheet.Where(s => searchPredicate(s, sheetSearchText)).Cast<ExcelRow>().ToArray();
     }
 
-    public static bool ExcelSheetCombo<T>(string id, ref uint selectedRow, ExcelSheetComboOptions<T> options = null) where T : struct, IExcelRow<T>
+    public static bool ExcelSheetCombo<T>(string id, ref uint selectedRow, ExcelSheetComboOptions<T> options = null) where T : ExcelRow
     {
         options ??= new ExcelSheetComboOptions<T>();
         var sheet = DalamudApi.DataManager.GetExcelSheet<T>();
+        if (sheet == null) return false;
 
         var getPreview = options.GetPreview ?? options.FormatRow;
-        if (!ImGui.BeginCombo(id, sheet.GetRowOrDefault(selectedRow) is { } r ? getPreview(r) : selectedRow.ToString(), options.ComboFlags | ImGuiComboFlags.HeightLargest)) return false;
+        if (!ImGui.BeginCombo(id, sheet.GetRow(selectedRow) is { } r ? getPreview(r) : selectedRow.ToString(), options.ComboFlags | ImGuiComboFlags.HeightLargest)) return false;
 
         ExcelSheetSearchInput(id, options.FilteredSheet ?? sheet, options.SearchPredicate ?? ((row, s) => options.FormatRow(row).Contains(s, StringComparison.CurrentCultureIgnoreCase)));
 
@@ -76,12 +77,11 @@ public static partial class ImGuiEx
 
         var ret = false;
         var drawSelectable = options.DrawSelectable ?? ((row, selected) => ImGui.Selectable(options.FormatRow(row), selected));
-        using (var clipper = new ListClipper(filteredSearchIDs.Length))
+        using (var clipper = new ListClipper(filteredSearchSheet.Length))
         {
             foreach (var i in clipper.Rows)
             {
-                if (sheet.GetRowOrDefault(filteredSearchIDs[i]) is not { } row) continue;
-
+                var row = (T)filteredSearchSheet[i];
                 using var _ = IDBlock.Begin(i);
                 if (!drawSelectable(row, selectedRow == row.RowId)) continue;
                 selectedRow = row.RowId;
@@ -99,27 +99,27 @@ public static partial class ImGuiEx
         return ret;
     }
 
-    public static bool ExcelSheetPopup<T>(string id, out uint selectedRow, ExcelSheetPopupOptions<T> options = null) where T : struct, IExcelRow<T>
+    public static bool ExcelSheetPopup<T>(string id, out uint selectedRow, ExcelSheetPopupOptions<T> options = null) where T : ExcelRow
     {
         options ??= new ExcelSheetPopupOptions<T>();
-        var sheet = DalamudApi.DataManager.GetExcelSheet<T>();
+        var sheet = options.FilteredSheet ?? DalamudApi.DataManager.GetExcelSheet<T>();
         selectedRow = 0;
+        if (sheet == null) return false;
 
         ImGui.SetNextWindowSize(options.Size ?? new Vector2(0, 250 * ImGuiHelpers.GlobalScale));
         if (!ImGui.BeginPopupContextItem(id, options.PopupFlags)) return false;
 
-        ExcelSheetSearchInput(id, options.FilteredSheet ?? sheet, options.SearchPredicate ?? ((row, s) => options.FormatRow(row).Contains(s, StringComparison.CurrentCultureIgnoreCase)));
+        ExcelSheetSearchInput(id, sheet, options.SearchPredicate ?? ((row, s) => options.FormatRow(row).Contains(s, StringComparison.CurrentCultureIgnoreCase)));
 
         ImGui.BeginChild("ExcelSheetSearchList", Vector2.Zero, true);
 
         var ret = false;
         var drawSelectable = options.DrawSelectable ?? ((row, selected) => ImGui.Selectable(options.FormatRow(row), selected));
-        using (var clipper = new ListClipper(filteredSearchIDs.Length))
+        using (var clipper = new ListClipper(filteredSearchSheet.Length))
         {
             foreach (var i in clipper.Rows)
             {
-                if (sheet.GetRowOrDefault(filteredSearchIDs[i]) is not { } row) continue;
-
+                var row = (T)filteredSearchSheet[i];
                 using var _ = IDBlock.Begin(i);
                 if (!drawSelectable(row, options.IsRowSelected(row))) continue;
                 selectedRow = row.RowId;
@@ -136,7 +136,7 @@ public static partial class ImGuiEx
         return ret;
     }
 
-    public static bool ExcelSheetMultiselectPopup<T>(string id, ICollection<uint> selectedRows, ExcelSheetPopupOptions<T> options = null) where T : struct, IExcelRow<T>
+    public static bool ExcelSheetMultiselectPopup<T>(string id, ICollection<uint> selectedRows, ExcelSheetPopupOptions<T> options = null) where T : ExcelRow
     {
         options ??= new ExcelSheetPopupOptions<T>();
         options = options with { IsRowSelected = row => selectedRows.Contains(row.RowId) };
@@ -147,14 +147,13 @@ public static partial class ImGuiEx
     }
 
     private static string tableSearchText = string.Empty;
-    private static uint[] filteredTableSearchSheetIDs;
+    private static ExcelRow[] filteredTableSearchSheet;
     private static string prevTableSearchID;
     private static Type prevTableSearchType;
     private static bool tableCompatMode = false;
 
-    public static void ExcelSheetTable<T>(string id) where T : struct, IExcelRow<T>
+    public static void ExcelSheetTable<T>(string id) where T : ExcelRow
     {
-        return; // Crashes
         var properties = typeof(T).GetProperties(BindingFlags.DeclaredOnly | BindingFlags.Instance | BindingFlags.Public);
         var columns = properties.Length;
 
@@ -166,13 +165,13 @@ public static partial class ImGuiEx
         {
             tableSearchText = string.Empty;
             prevTableSearchType = typeof(T);
-            filteredTableSearchSheetIDs = null;
+            filteredTableSearchSheet = null;
             prevTableSearchID = id;
         }
 
         ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
         if (ImGui.InputTextWithHint("##ExcelTableSearch", !tableCompatMode ? "\uE052 Search" : "\uE052 Large Table Sorting Enabled", ref tableSearchText, 128, ImGuiInputTextFlags.AutoSelectAll | ImGuiInputTextFlags.EnterReturnsTrue))
-            filteredTableSearchSheetIDs = null;
+            filteredTableSearchSheet = null;
 
         if (IsItemReleased(ImGuiMouseButton.Right))
             tableCompatMode ^= true;
@@ -188,7 +187,7 @@ public static partial class ImGuiEx
 
         static string GetObjectAsString(object o) => o switch
         {
-            RowRef rowRef => $"{rowRef.GetType().GenericTypeArguments[0].Name}#{rowRef.RowId}",
+            ILazyRow lazyRow => $"{lazyRow.GetType().GenericTypeArguments[0].Name}#{lazyRow.Row}",
             //Lumina.Text.SeString seString => seString.ToDalamudString().ToString(),
             _ => o?.ToString() ?? string.Empty
         };
@@ -199,7 +198,7 @@ public static partial class ImGuiEx
                 yield return GetObjectAsString(propertyInfo.GetValue(o));
         }
 
-        static IComparable GetComparable(object o) => o is RowRef rowRef ? rowRef.RowId : o as IComparable ?? GetObjectAsString(o);
+        static IComparable GetComparable(object o) => o is ILazyRow lazyRow ? lazyRow.Row : o as IComparable ?? GetObjectAsString(o);
 
         ImGui.TableSetupScrollFreeze(1, 1);
         ImGui.TableSetupColumn("Row");
@@ -215,59 +214,63 @@ public static partial class ImGuiEx
         ImGui.TableHeadersRow();
 
         var sheet = DalamudApi.DataManager.GetExcelSheet<T>();
-        // Sorting causes crashes if above the current max column limit of 64, so this is required until Dalamud updates ImGui
-        var sortSpecs = ImGui.TableGetSortSpecs();
-        bool usingSort;
-        unsafe
+        if (sheet != null)
         {
-            usingSort = sortSpecs.NativePtr != null;
-        }
-
-        if (filteredTableSearchSheetIDs == null || (usingSort && sortSpecs.SpecsDirty))
-        {
-            var rows = sheet.Where(row => row.RowId.ToString() == tableSearchText || GetPropertiesAsStrings(properties, row).Any(valueStr => valueStr.Contains(tableSearchText, StringComparison.CurrentCultureIgnoreCase)));
-
-            if (usingSort)
+            // Sorting causes crashes if above the current max column limit of 64, so this is required until Dalamud updates ImGui
+            var sortSpecs = ImGui.TableGetSortSpecs();
+            bool usingSort;
+            unsafe
             {
-                if (sortSpecs.Specs.ColumnIndex > 0)
-                {
-                    rows = sortSpecs.Specs.SortDirection == ImGuiSortDirection.Ascending
-                        ? rows.OrderBy(row => GetComparable(properties[sortSpecs.Specs.ColumnIndex - 1].GetValue(row)))
-                        : rows.OrderByDescending(row => GetComparable(properties[sortSpecs.Specs.ColumnIndex - 1].GetValue(row)));
-                }
-                else
-                {
-                    rows = sortSpecs.Specs.SortDirection == ImGuiSortDirection.Ascending
-                        ? rows.OrderBy(row => row.RowId)
-                        : rows.OrderByDescending(row => row.RowId);
-                }
-
-                sortSpecs.SpecsDirty = false;
+                usingSort = sortSpecs.NativePtr != null;
             }
 
-            filteredTableSearchSheetIDs = rows.Select(r => r.RowId).ToArray();
-        }
-        using var clipper = new ListClipper(filteredTableSearchSheetIDs.Length);
-        foreach (var i in clipper.Rows)
-        {
-            if (sheet.GetRowOrDefault(filteredTableSearchSheetIDs[i]) is not { } row) continue;
-
-            ImGui.TableNextRow();
-            ImGui.TableNextColumn();
-
-            ImGui.TextUnformatted(row.RowId.ToString());
-            ImGui.TableNextColumn();
-
-            var j = 0;
-            foreach (var valueStr in GetPropertiesAsStrings(properties, row))
+            if (filteredTableSearchSheet == null || (usingSort && sortSpecs.SpecsDirty))
             {
-                ImGui.TextUnformatted(valueStr);
+                var rows = sheet.Where(row => row.RowId.ToString() == tableSearchText || GetPropertiesAsStrings(properties, row).Any(valueStr => valueStr.Contains(tableSearchText, StringComparison.CurrentCultureIgnoreCase)));
 
-                if (tableCompatMode && j == 62)
-                    break;
+                if (usingSort)
+                {
+                    if (sortSpecs.Specs.ColumnIndex > 0)
+                    {
+                        rows = sortSpecs.Specs.SortDirection == ImGuiSortDirection.Ascending
+                            ? rows.OrderBy(row => GetComparable(properties[sortSpecs.Specs.ColumnIndex - 1].GetValue(row)))
+                            : rows.OrderByDescending(row => GetComparable(properties[sortSpecs.Specs.ColumnIndex - 1].GetValue(row)));
+                    }
+                    else
+                    {
+                        rows = sortSpecs.Specs.SortDirection == ImGuiSortDirection.Ascending
+                            ? rows.OrderBy(row => row.RowId)
+                            : rows.OrderByDescending(row => row.RowId);
+                    }
 
-                if (j++ != properties.Length - 1)
-                    ImGui.TableNextColumn();
+                    sortSpecs.SpecsDirty = false;
+                }
+
+                filteredTableSearchSheet = rows.Cast<ExcelRow>().ToArray();
+            }
+            using var clipper = new ListClipper(filteredTableSearchSheet.Length);
+            foreach (var i in clipper.Rows)
+            {
+                var row = filteredTableSearchSheet[i];
+                if (row == null) continue;
+
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+
+                ImGui.TextUnformatted(row.RowId.ToString());
+                ImGui.TableNextColumn();
+
+                var j = 0;
+                foreach (var valueStr in GetPropertiesAsStrings(properties, row))
+                {
+                    ImGui.TextUnformatted(valueStr);
+
+                    if (tableCompatMode && j == 62)
+                        break;
+
+                    if (j++ != properties.Length - 1)
+                        ImGui.TableNextColumn();
+                }
             }
         }
 
